@@ -1,0 +1,19 @@
+# wandb sweep sweep.yaml
+program: generate_perturb.py
+method: grid  # or bayes, random
+parameters:
+  pag_scale:
+    values: [0.2, 0.3, 0.4, 0.5, 0.6]
+  cfg_scale:
+    values: [3.0, 4.0, 5.0]
+  # cd_beta:
+    # values: [0.2, 0.4, 0.6, 0.8]
+  add:
+    values: ['false', 'true']
+  layer_types: 
+    values: ["all", "early", "middle", "late"]
+command:
+  - ${env}
+  - python3
+  - ${program}
+  - ${args_no_hyphens}
