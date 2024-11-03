@@ -390,8 +390,6 @@ def cfg_pag_forward(attention: LlamaSdpaAttention):
             k_len = key_states_ptb.size(2)
             attention_mask = torch.zeros((q_len, k_len), device=query_states_ptb.device, dtype=query_states_ptb.dtype)
             attention_mask[ : , prefix_len : -1] = float("-inf")
-            
-
             # expand the mask to match the attention weights shape
             attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)  # Add batch and num_heads dimensions
             attn_output_ptb = torch.nn.functional.scaled_dot_product_attention(

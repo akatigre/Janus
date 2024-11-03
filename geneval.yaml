@@ -1,3 +1,9 @@
+
+metadata_file: "/home/server08/yoonjeon_workspace/MMAR/eval/geneval/prompt/evaluation_metadata.jsonl"
+outdir: "/home/server08/yoonjeon_workspace/MMAR/eval/geneval/outputs/Janus"
+outfile: "results.jsonl"
+model-path: "/home/server08/yoonjeon_workspace/MMAR/eval/geneval/obj_detector/mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco.pth"
+
 model:
   path: "deepseek-ai/Janus-1.3B"
   dtype: "bfloat16"
