@@ -6,8 +6,11 @@ import random
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from PIL import Image
+from torchvision.utils import make_grid
 from PIL import Image, ImageFont, ImageDraw
 from transformers import set_seed as hf_set_seed
+
 
 def set_seed(seed):
 
@@ -76,3 +79,29 @@ def save_image(images, gt_images, prompt, cfg, teacher_force_upto):
     x_position = (width - w) // 2
     draw.text((x_position, h + 55), prompt, fill=(0, 0, 0), font=font)
     return comb_image
+
+def save_benchmark_images(images, cfg, save_path):
+    if cfg.benchmark.name=="dpgbench":
+        per_prompt_images.extend([image for image in images])
+        for img_idx in range(0, len(per_prompt_images), cfg.benchmark.batch):
+            images = make_grid(per_prompt_images[img_idx: img_idx + cfg.benchmark.batch], nrow=2)
+            images = images.astype('uint8')
+            images = Image.fromarray(images)
+            save_path[img_idx].parent.mkdir(parents=True, exist_ok=True)
+            images.save(save_path[img_idx])
+        per_prompt_images = []
+    else:
+        images = images.astype("uint8")
+        pil_images = [Image.fromarray(image) for image in images]
+        for save_at, image in zip(save_path, pil_images):
+            save_at.parent.mkdir(parents=True, exist_ok=True)
+            image.save(save_at)
+            
+            
+def one_hot(tensor, dimension):
+    while len(tensor.shape) < 2:
+        tensor = tensor.unsqueeze(0)
+    onehot = torch.LongTensor(tensor.shape[0], tensor.shape[1], dimension).to(tensor.device)
+    onehot.zero_().scatter_(2, tensor.unsqueeze(-1), 1)
+    onehot.to(tensor.device)
+    return onehot
