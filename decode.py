@@ -52,44 +52,13 @@ def adaptive_decode(self, input_ids: torch.LongTensor, scores: torch.FloatTensor
     scores_processed = scores.masked_fill(indices_to_remove, filter_value)
     return scores_processed
 
-
-def gumbel_softmax(logits, tau=1.0, hard=False):
-    gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10) + 1e-10)
-    y = logits + gumbel_noise
-    softmax = torch.softmax(y / tau, dim=-1)
-    
-    if hard:
-        # Convert softmax probabilities to one-hot for the forward pass
-        idx = softmax.argmax(dim=-1, keepdim=True)
-        hard_one_hot = torch.zeros_like(softmax).scatter_(-1, idx, 1.0)
-        return (hard_one_hot - softmax).detach() + softmax, idx  # Straight-through gradient
-    else:
-        return softmax
-
-def soft_argmax(soft_sample):
-    """
-    Compute a soft version of argmax that outputs differentiable indices.
-    Args:
-        soft_sample: Tensor of shape (..., num_classes), soft probabilities over classes.
-    Returns:
-        Tensor of shape (...), differentiable indices.
-    """
-    num_classes = soft_sample.size(-1)
-    indices = torch.arange(num_classes, device=soft_sample.device)
-    return torch.sum(soft_sample * indices, dim=-1)
-
-def soft_nll(logits_perturbed, logits):
-    p = F.softmax(logits_perturbed, dim=-1)
-    logp = F.log_softmax(logits, dim=-1)
-    return -(p * logp).sum(dim=-1).mean(dim=-1)
-
-
 def future_decode(
     outputs, 
     cfg: DictConfig,
     mmgpt: MultiModalityCausalLM,
     input_embeds_prompt: torch.Tensor,
     temperature: float = 1.0,
+    inference = True,
     ):
     prefix_len = input_embeds_prompt.shape[1]
     
@@ -152,11 +121,16 @@ def future_decode(
         # img_embeds = mmgpt.gen_aligner(emb).permute(1, 0, 2) # 2 * batch_size, img_tokens, 2048
         
         #* Get output logits from sampled tokens
-        next_token_hard = probs.argmax(dim=-1, keepdim=True) # use gumbel_softmax to relax greedy
-        next_token_hard = (next_token_hard - probs).detach() + probs
-        next_token_hard = torch.cat([next_token_hard, next_token_hard], dim=1) # 2 * batch_size, img_tokens, 16384
+        next_token_hard = torch.argmax(probs, dim=-1)
+        if inference:
+            next_token_onehot = torch.nn.functional.one_hot(next_token_hard, num_classes=16384).float().to(probs.device)
+            curr_next_tokens = next_token_onehot - probs.detach() + probs
+        else:
+            curr_next_tokens = torch.nn.functional.gumbel_softmax(probs, tau=1, hard=True, dim=-1)
+        
+        curr_next_tokens = torch.cat([curr_next_tokens, curr_next_tokens], dim=1) # 2 * batch_size, img_tokens, 16384
         weights = mmgpt.gen_embed.weight  # [vocab_size, 8]
-        img_embeds = torch.matmul(next_token_hard, weights) # 2 * batch_size, img_tokens, 2048
+        img_embeds = torch.matmul(curr_next_tokens, weights) # 2 * batch_size, img_tokens, 2048
         img_embeds = mmgpt.gen_aligner(img_embeds).permute(1, 0, 2) # 2 * batch_size, img_tokens, 2048
         
         args = {
