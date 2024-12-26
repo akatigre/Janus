@@ -66,34 +66,18 @@ def future_decode(
     past_key_values = ()
     for idx, layer_past_kv in enumerate(outputs.past_key_values):
         k_states, v_states = layer_past_kv
-        k_states = k_states[:, :, :prefix_len, :] # 2, 
+        k_states = k_states[:, :, :prefix_len, :]
         v_states = v_states[:, :, :prefix_len, :]
         past_key_values += ((k_states, v_states), )
      
     if cfg.yjk.target=="hidden_state":
         unpert = outputs.output_hidden_states.detach()
-        all_input_ids = torch.arange(0, 16384, dtype=torch.int, device=unpert.device)
-        hidden_state_dict = mmgpt.language_model.model.embed_tokens(all_input_ids) # vocab_size, 2048 
-        def map_hidden_state(hidden_states, hidden_state_dict):
-            """
-            Maps each vector in hidden_states to the closest vector in hidden_state_dict.
-
-            Args:
-                hidden_states (torch.Tensor): Tensor of shape (N, 2048).
-                hidden_state_dict (torch.Tensor): Tensor of shape (M, 2048).
-
-            Returns:
-                torch.Tensor: Mapped hidden states of shape (N, 2048).
-            """
-            distances = torch.cdist(hidden_states, hidden_state_dict)  # Shape: (N, M)
-            closest_indices = torch.argmin(distances, dim=-1)  # Shape: (N,)
-            mapped_hidden_states = hidden_state_dict[closest_indices]
-            return mapped_hidden_states
-        unpert = map_hidden_state(unpert, hidden_state_dict) #* CUDA OOM error
         
     elif cfg.yjk.target=="logit":
         unpert = outputs.output_logits.detach()
         
+    unpert_cfg = cfg_decode(logit_cond = unpert[:, 0::2, :], logit_uncond = unpert[:, 1::2, :], scale = cfg.cfg_scale).permute(1, 0, 2) # image_tokens, bsz, vocab_size
+    unpert_cfg = torch.softmax(unpert_cfg / temperature, dim=-1)
     epsilon = torch.nn.Parameter(torch.zeros_like(unpert), requires_grad=True) # image tokens, 2, 16384
     if cfg.yjk.optimizer=="adam":
         optimizer = torch.optim.Adam([epsilon], lr = cfg.yjk.stepsize)
@@ -103,7 +87,7 @@ def future_decode(
     for idx in pbar:
         optimizer.zero_grad()
         #* Perturb logits
-        noise = torch.randn_like(unpert) * sigma[idx]
+        # noise = torch.randn_like(unpert) * sigma[idx]
         pert_logits = unpert + epsilon # + noise  # perturbed
         
         if pert_logits.shape[-1] != 16384:
@@ -123,7 +107,7 @@ def future_decode(
         #* Get output logits from sampled tokens
         next_token_hard = torch.argmax(probs, dim=-1)
         if inference:
-            next_token_onehot = torch.nn.functional.one_hot(next_token_hard, num_classes=16384).float().to(probs.device)
+            next_token_onehot = torch.nn.functional.one_hot(next_token_hard, num_classes=16384)
             curr_next_tokens = next_token_onehot - probs.detach() + probs
         else:
             curr_next_tokens = torch.nn.functional.gumbel_softmax(probs, tau=1, hard=True, dim=-1)
@@ -149,12 +133,16 @@ def future_decode(
         
         #! Fluency Constraint of BOLT = same as perplexity loss
         probs_cfg = torch.softmax(logits_cfg / temperature, dim=-1)  # batch_size, img_tokens, vocab_size
-        loss = -torch.sum(probs_cfg * torch.log(probs_cfg + 1e-10)) / probs_cfg.size(0)
+        loss_ppl = -torch.sum(probs_cfg * torch.log(probs_cfg + 1e-10)) / probs_cfg.size(0)
+        loss_kl = torch.nn.functional.kl_div(probs_cfg.log(), unpert_cfg.detach(), reduction='batchmean')
+        
+        loss = loss_ppl + loss_kl
         loss.backward()
         optimizer.step()
-        pbar.set_description(f"Loss: {loss.item():.4f} Epsilon: {epsilon.abs().mean().item():.4f}")
-    
-    return probs_cfg.argmax(dim=-1), torch.multinomial(probs, num_samples=1) # batch_size, img_tokens
+        pbar.set_description(f"Loss: {loss.item():.4f} Loss_PPL: {loss_ppl.item():.4f} Loss_KL: {loss_kl.item():.4f} Epsilon: {epsilon.abs().mean().item():.4f}")
+        
+    bsz = probs_cfg.shape[0]
+    return torch.multinomial(probs_cfg.view(-1, probs_cfg.shape[-1]), num_samples=1).view(bsz, -1), torch.multinomial(unpert_cfg.view(-1, unpert_cfg.shape[-1]), num_samples=1).view(bsz, -1) # batch_size, img_tokens, vocab_size
     
 
     
