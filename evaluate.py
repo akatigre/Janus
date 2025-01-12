@@ -36,7 +36,7 @@ from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM
 from torchvision.utils import make_grid, save_image
 from janus.models import MultiModalityCausalLM, VLChatProcessor
-from utils import set_seed, load_metadata
+from utils import set_seed, load_metadata, convert_to_pil
 from generate import generate_t2i
 from tokenize_janus import tokenize_text
 
@@ -112,6 +112,20 @@ def main(cfg: DictConfig):
         tokens = tokens.to(device)
         attention_mask = attention_mask.to(device)
         input_embeds_prompt = vl_gpt.language_model.get_input_embeddings()(tokens) # bs, n_ctx, n_embed
+        original_tokens, cfg_logits = generate_t2i(
+                                mmgpt = vl_gpt,
+                                batch_size = len(prompts),
+                                prompt_embeds = input_embeds_prompt,
+                                attention_mask = attention_mask,
+                                do_langevin_dynamics = cfg.yjk.do_langevin_dynamics,
+                                cfg = cfg,
+                                epsilons = epsilons,
+                            ) 
+        
+        pil_img = convert_to_pil(original_tokens, vl_gpt, batch_size, cfg.model_params.img_size)
+        pil_img.save(f"debug/original_{cfg.cfg_scale}.png")
+        
+        breakpoint()
         
         if cfg.yjk.do_langevin_dynamics:
             name = f"debug/cfg{cfg.cfg_scale}_{cfg.yjk.optimizer}_lr{cfg.yjk.stepsize}_initnoise{cfg.yjk.start_noise}"
@@ -135,7 +149,7 @@ def main(cfg: DictConfig):
             best_loss = float('inf')
             for it in trange(cfg.yjk.update_iters):
                 start_time = time.time()
-                perturbed_tokens,loss = generate_t2i(
+                perturbed_tokens, loss = generate_t2i(
                                 mmgpt = vl_gpt,
                                 batch_size = len(prompts),
                                 prompt_embeds = input_embeds_prompt,
@@ -159,65 +173,12 @@ def main(cfg: DictConfig):
                 save_tokens = perturbed_tokens
                 bsz = save_tokens.shape[0]
                 
-                shape = [bsz, 8, 384 // 16, 384 // 16]
-                dec = vl_gpt.gen_vision_model.decode_code(save_tokens.to(dtype=torch.int), shape=shape)
-                dec = dec.to(torch.float32).detach().cpu().numpy().transpose(0, 2, 3, 1)
-                dec = np.clip((dec + 1) / 2 * 255, 0, 255)
-
-                images = np.zeros((bsz, cfg.model_params.img_size, cfg.model_params.img_size, 3), dtype=np.uint8)
-                # Populate the images array with dec values
-                images[:, :, :] = dec
 
                 # Log time taken for debugging purposes
                 end_time = time.time()
                 log.info(f"Time taken: {end_time - start_time} seconds")
 
-                # Ensure images are uint8
-                if images.dtype != np.uint8:
-                    images = (images * 255).clip(0, 255).astype("uint8")
-
-                # Convert to PyTorch tensor and normalize
-                images_tensor = torch.tensor(images).permute(0, 3, 1, 2).float() / 255.0  # Shape: (batch_size, channels, height, width)
-                whole_images = torch.cat([whole_images, images_tensor], dim=0) if it else images_tensor
                 
-                # Create a grid of images using torchvision
-            nrow = min(len(images), batch_size)  # Adjust number of images per row
-            grid_image = make_grid(whole_images, nrow=nrow, )
-            
-            # Save the grid image
-            grid_image_path = f"{name}_{prompts[0]}.png"
-            save_image(grid_image, grid_image_path)
-            
-        else:
-            unperturbed_tokens, loss = generate_t2i(
-                mmgpt = vl_gpt,
-                batch_size = len(prompts),
-                prompt_embeds = input_embeds_prompt,
-                attention_mask = attention_mask,
-                do_langevin_dynamics = cfg.yjk.do_langevin_dynamics,
-                cfg = cfg,
-                epsilons = None,
-            ) 
-            save_tokens = unperturbed_tokens
-            bsz = save_tokens.shape[0]
-            
-            shape = [bsz, 8, 384 // 16, 384 // 16]
-            dec = vl_gpt.gen_vision_model.decode_code(save_tokens.to(dtype=torch.int), shape=shape)
-            dec = dec.to(torch.float32).detach().cpu().numpy().transpose(0, 2, 3, 1)
-            dec = np.clip((dec + 1) / 2 * 255, 0, 255)
-
-            images = np.zeros((bsz, cfg.model_params.img_size, cfg.model_params.img_size, 3), dtype=np.uint8)
-            images[:, :, :] = dec
-            images = images.astype("uint8")
-            pil_images = [Image.fromarray(image) for image in images]
-            name = f"debug/cfg{cfg.cfg_scale}"
-            
-            pil_images[0].save(f"{name}_{prompts[0]}.png")
-        break
-        # for save_at, image in zip(save_path, pil_images):
-        #     save_at.parent.mkdir(parents=True, exist_ok=True)
-        #     image.save(save_at)
-            
-        
+          
 if __name__=="__main__":
     main()

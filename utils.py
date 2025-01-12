@@ -6,7 +6,7 @@ import random
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
-from PIL import Image
+
 from torchvision.utils import make_grid
 from PIL import Image, ImageFont, ImageDraw
 from transformers import set_seed as hf_set_seed
@@ -105,3 +105,17 @@ def one_hot(tensor, dimension):
     onehot.zero_().scatter_(2, tensor.unsqueeze(-1), 1)
     onehot.to(tensor.device)
     return onehot
+
+def convert_to_pil(tokens, vl_gpt, bsz, img_size):
+    shape = [bsz, 8, 384 // 16, 384 // 16]
+    dec = vl_gpt.gen_vision_model.decode_code(tokens.to(dtype=torch.int), shape=shape)
+    dec = dec.to(torch.float32).detach().cpu().numpy().transpose(0, 2, 3, 1)
+    dec = np.clip((dec + 1) / 2 * 255, 0, 255)
+    images = np.zeros((bsz, img_size, img_size, 3), dtype=np.uint8)
+    # Populate the images array with dec values
+    images[:, :, :] = dec
+    if images.dtype != np.uint8:
+        images = (images * 255).clip(0, 255).astype("uint8")
+    # Convert to PyTorch tensor and normalize
+    pil_img = Image.fromarray(images)
+    return pil_img

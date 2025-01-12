@@ -40,7 +40,7 @@ def generate_t2i(
         else:
             hidden_states = outputs.last_hidden_state
             
-        next_token_onehot, inputs_embeds, next_tokens, *_ = soft_forward(
+        _, _, next_tokens, _, _, cfg_logits, *_ = soft_forward(
             hidden_states=hidden_states.clone().detach().requires_grad_(True), 
             mmgpt=mmgpt, 
             soft = True if do_langevin_dynamics else False,
@@ -50,36 +50,9 @@ def generate_t2i(
             total_img_tokens = image_token_num_per_image,
             epsilon = epsilons[:, i, :].unsqueeze(dim=1) if do_langevin_dynamics else None
             )
-        output_input_embeds[:, i:i+1] = inputs_embeds
         generated_tokens[:, i:i+1] = next_tokens
-        if next_token_onehot is not None:
-            output_soft_onehots[:, i:i+1] = next_token_onehot
-        
-    
-    loss = None
-    if do_langevin_dynamics:
-        args = {
-            # perturbed inputs
-            "inputs_embeds": torch.cat([prompt_embeds, output_input_embeds], dim=1), # bsz, prefix_len + img_len, 2048
-            "attention_mask": attention_mask, # 8, 13 = padding mask to indicate padding tokens
-            "use_cache": False,
-            "past_key_values": None,
-            "output_hidden_states": False,
-        }
-        with torch.inference_mode():
-            outputs = mmgpt.language_model.model(
-                **args
-            )
-            hidden_states = outputs.last_hidden_state[:, prefix_len: ]
-            last_logits = mmgpt.gen_head(hidden_states) # 2 * batch_size, seq_len, vocab_size (16384)
-            uncond_logits, cond_logits = last_logits[0::2, :], last_logits[1::2, :]
-            cfg_soft_logits = cfg_decode(logit_cond = cond_logits, logit_uncond = uncond_logits, scale = cfg.cfg_scale)
-        
-        # Flatten the tokens
-        
-        loss_fct = torch.nn.CrossEntropyLoss()
-        loss = loss_fct(cfg_soft_logits.view(-1, cfg_soft_logits.size(-1)), output_soft_onehots.view(-1, output_soft_onehots.size(-1)))
-    return generated_tokens, loss
+        cfg_logits[:, i:i+1] = cfg_logits
+    return generated_tokens, cfg_logits
     
 def soft_forward(hidden_states, mmgpt: MultiModalityCausalLM, epsilon : torch.Tensor, token_idx: int, soft: bool = True, temperature: float = 1.0, cfg: DictConfig = None, use_hidden_state_bias: bool = False, total_img_tokens: int = 576):
     assert hidden_states.dim() == 3, "hidden_states should be of shape (2 * batch_size, seq_len, 2048)"
@@ -112,4 +85,4 @@ def soft_forward(hidden_states, mmgpt: MultiModalityCausalLM, epsilon : torch.Te
         next_token = torch.cat([next_token_hard, next_token_hard], dim=0)  # 2 * batch_size, seq_len
         img_embeds = mmgpt.prepare_gen_img_embeds(next_token) # 2 * batch_size, seq_len, 2048
         next_token_onehot = None
-    return next_token_onehot, img_embeds, next_token_hard, cond_logits, uncond_logits, cond_hidden_states, uncond_hidden_states
+    return next_token_onehot, img_embeds, next_token_hard, cond_logits, uncond_logits, cfg_logits, cond_hidden_states, uncond_hidden_states
