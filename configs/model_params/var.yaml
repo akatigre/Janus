@@ -1,0 +1,9 @@
+model_name: "VAR"
+model_depth: 16
+batch_size: 48
+top_p: 0.96
+top_k: 900
+more_smooth: false
+hf_home: 'https://huggingface.co/FoundationVision/var/resolve/main'
+vae_ckpt: vae_ch160v4096z32.pth
+var_ckpt: var_d${model_params.model_depth}.pth

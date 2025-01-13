@@ -12,49 +12,51 @@ def generate_t2i(
         image_token_num_per_image: int = 576,
         temperature: float = 1.0,
         cfg: DictConfig = None,
-        do_langevin_dynamics: bool = True,
-        epsilons: torch.Tensor = None,
         **kwargs,
     ): 
-    output_input_embeds = torch.zeros((2 * batch_size, image_token_num_per_image, 2048)).cuda()
+    
     generated_tokens = torch.zeros((batch_size, image_token_num_per_image), dtype=torch.int).cuda()
-    output_soft_onehots = torch.zeros((batch_size, image_token_num_per_image, 16384)).cuda()
+    output_cfg_logits = torch.zeros((batch_size, image_token_num_per_image, 16384))
+    output_cfg_hidden = torch.zeros((2 * batch_size, image_token_num_per_image, 2048))
     inputs_embeds = prompt_embeds
     prefix_len = prompt_embeds.shape[1]
     for i in trange(image_token_num_per_image):    
-        
-        args = {
-            "inputs_embeds": inputs_embeds, # 8, 13, 2048
-            "attention_mask": attention_mask, # 8, 13 = padding mask to indicate padding tokens
-            "use_cache": True,
-            "past_key_values": outputs.past_key_values if i != 0 else None,
-            "output_hidden_states": False,
-        }
         with torch.inference_mode():
+            args = {
+                "inputs_embeds": inputs_embeds, # 8, 13, 2048
+                "attention_mask": attention_mask, # 8, 13 = padding mask to indicate padding tokens
+                "use_cache": True,
+                "past_key_values": outputs.past_key_values if i != 0 else None,
+                "output_hidden_states": False,
+            }
             outputs = mmgpt.language_model.model(
                 **args
             )
         
-        if not i:
-            hidden_states = outputs.last_hidden_state[:, -1, :].unsqueeze(dim=1) # for prefix, remove
-        else:
-            hidden_states = outputs.last_hidden_state
+            if not i:
+                hidden_states = outputs.last_hidden_state[:, -1, :].unsqueeze(dim=1) # for prefix, remove
+            else:
+                hidden_states = outputs.last_hidden_state
             
-        _, _, next_tokens, _, _, cfg_logits, *_ = soft_forward(
-            hidden_states=hidden_states.clone().detach().requires_grad_(True), 
-            mmgpt=mmgpt, 
-            soft = True if do_langevin_dynamics else False,
-            token_idx = i,
-            cfg = cfg,
-            use_hidden_state_bias = cfg.yjk.use_hidden_state_bias,
-            total_img_tokens = image_token_num_per_image,
-            epsilon = epsilons[:, i, :].unsqueeze(dim=1) if do_langevin_dynamics else None
-            )
-        generated_tokens[:, i:i+1] = next_tokens
-        cfg_logits[:, i:i+1] = cfg_logits
-    return generated_tokens, cfg_logits
+            
+            img_embeds, next_token_hard, cond_logits, uncond_logits, cfg_logits = soft_forward(
+                hidden_states=hidden_states,
+                mmgpt = mmgpt, 
+                soft = False,
+                token_idx = i,
+                cfg = cfg,
+                total_img_tokens = image_token_num_per_image,
+                )
+            inputs_embeds = img_embeds
+        
+        generated_tokens[:, i:i+1] = next_token_hard.squeeze(dim=-1).detach().clone()
+        output_cfg_logits[:, i:i+1] = cfg_logits.detach().clone().cpu()
+        output_cfg_hidden[:, i:i+1] = hidden_states.detach().clone().cpu()
+    return generated_tokens, output_cfg_logits, output_cfg_hidden
     
-def soft_forward(hidden_states, mmgpt: MultiModalityCausalLM, epsilon : torch.Tensor, token_idx: int, soft: bool = True, temperature: float = 1.0, cfg: DictConfig = None, use_hidden_state_bias: bool = False, total_img_tokens: int = 576):
+def soft_forward(hidden_states, mmgpt: MultiModalityCausalLM, token_idx: int, 
+                 soft: bool = True, temperature: float = 1.0, cfg: DictConfig = None, 
+                 use_hidden_state_bias: bool = False, total_img_tokens: int = 576, epsilon : torch.Tensor = None):
     assert hidden_states.dim() == 3, "hidden_states should be of shape (2 * batch_size, seq_len, 2048)"
     bsz = hidden_states.shape[0] // 2
     uncond_hidden_states = hidden_states[0::2]
@@ -74,7 +76,8 @@ def soft_forward(hidden_states, mmgpt: MultiModalityCausalLM, epsilon : torch.Te
     # next_token_hard = torch.argmax(logits.view(-1, 16384), dim=-1).view(bsz, -1)
     
     cfg_probs = torch.softmax(cfg_logits / temperature, dim=-1)
-    next_token_hard = torch.multinomial(cfg_probs.view(-1, 16384), num_samples=1).view(bsz, -1) # batch_size, seq_len
+    # next_token_hard = torch.multinomial(cfg_probs.view(-1, 16384), num_samples=1).view(bsz, -1) # batch_size, seq_len
+    next_token_hard = cfg_probs.argmax(dim=-1).view(bsz, -1)
     if soft: # Straight Through Estimator
         next_token_onehot = torch.nn.functional.one_hot(next_token_hard, num_classes=16384) # batch_size, seq_len, 16384
         next_token_onehot = next_token_onehot - cfg_probs.detach() + cfg_probs
@@ -85,4 +88,4 @@ def soft_forward(hidden_states, mmgpt: MultiModalityCausalLM, epsilon : torch.Te
         next_token = torch.cat([next_token_hard, next_token_hard], dim=0)  # 2 * batch_size, seq_len
         img_embeds = mmgpt.prepare_gen_img_embeds(next_token) # 2 * batch_size, seq_len, 2048
         next_token_onehot = None
-    return next_token_onehot, img_embeds, next_token_hard, cond_logits, uncond_logits, cfg_logits, cond_hidden_states, uncond_hidden_states
+    return img_embeds, next_token_hard, cond_logits, uncond_logits, cfg_logits

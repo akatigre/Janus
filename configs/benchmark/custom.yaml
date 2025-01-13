@@ -1,0 +1,5 @@
+name: custom
+outdirs: '${home_dir}/custom/outputs/'
+prompts: '/home/server08/yoonjeon_workspace/benchmark/prompts.txt'
+batch: 2
+save_as: image

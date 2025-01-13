@@ -117,5 +117,5 @@ def convert_to_pil(tokens, vl_gpt, bsz, img_size):
     if images.dtype != np.uint8:
         images = (images * 255).clip(0, 255).astype("uint8")
     # Convert to PyTorch tensor and normalize
-    pil_img = Image.fromarray(images)
+    pil_img = Image.fromarray(images[0]) # pil image: b, h w, c
     return pil_img

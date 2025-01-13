@@ -1,0 +1,5 @@
+name: "dpgbench"
+outdirs: '${home_dir}/dpg_bench/outputs/'
+prompts: '${home_dir}/dpg_bench/prompts/'
+batch: 4
+save_as: grid

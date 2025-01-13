@@ -1,0 +1,10 @@
+model_name: "hart"
+use_ema: true
+use_llm_system_prompt: true
+more_smooth: true
+store_seperately: false
+model_path: "/home/server08/yoonjeon_workspace/MMAR/hart/ckpts/hart-0.7b-1024px/llm"
+text_model_path: "/home/server08/yoonjeon_workspace/MMAR/hart/ckpts/Qwen2-VL-1.5B-Instruct"
+sample_folder_dir: "./outputs"
+max_token_length: 300
+shield_model_path: "./ckpts/shieldgemma-2b"

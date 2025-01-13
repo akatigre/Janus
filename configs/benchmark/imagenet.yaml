@@ -1,0 +1,6 @@
+name: "imagenet"
+ref_path: ${home_dir}/imageNet/VIRTUAL_imagenet256_labeled.npz
+outdirs: ${home_dir}/imageNet/outputs/
+total_images: 50000
+save_as: folder
+batch: 1

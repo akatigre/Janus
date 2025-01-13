@@ -1,0 +1,9 @@
+model_name: "Janus"
+model:
+  path: "deepseek-ai/Janus-1.3B"
+  dtype: "bfloat16"
+  device: "cuda"
+  
+image_token_num_per_image: 576
+img_size: 384
+patch_size: 16

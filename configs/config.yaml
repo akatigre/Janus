@@ -1,0 +1,38 @@
+defaults:
+  - benchmark: geneval
+  - model_params: janus
+  - _self_
+
+  # TRANSFORMERS_CACHE
+  # HF_HOME
+prompt_idx: 0
+seed: 42
+home_dir: "/home/server08/hdd1/yoonjeon_workspace/eval"
+cfg_scale: 5.0 # 1.0
+dynamic_scale: "linear"
+decode: cfg
+idx: 0
+yjk:
+  use_hidden_state_bias: false
+  stepsize: 0.1
+  update_iters: 100
+  do_langevin_dynamics: true
+  weight_decay: 0.01
+  start_noise: 0.5
+  optimizer: 'AdamW'
+  k_filter: 30
+  add_noise: true
+
+hydra:
+  output_subdir: null
+  sweep:
+    dir: .
+    subdir: ""
+  run:
+    dir: .
+
+wandb:
+  entity: "jeoni"
+  resume: "auto"
+  project: ${model_params.model_name}
+  sweep_name: ${model_params.model_name}

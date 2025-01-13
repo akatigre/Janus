@@ -1,0 +1,6 @@
+name: mjhq
+home_dir: "/home/server08/hdd1/yoonjeon_workspace/eval/"
+prompts: "${benchmark.home_dir}/MJHQ_30K/meta_data.json"
+outdirs: "${benchmark.home_dir}/MJHQ_30K/outputs/"
+batch: 1
+save_as: image

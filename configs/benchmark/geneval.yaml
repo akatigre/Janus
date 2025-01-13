@@ -1,0 +1,6 @@
+name: "geneval"
+outdirs: '${home_dir}/geneval/outputs/'
+prompts: '${home_dir}/geneval/prompt/evaluation_metadata.jsonl'
+batch: 4
+save_as: folder
+model-path: '${home_dir}/geneval/obj_detector/mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco.pth'
