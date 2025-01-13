@@ -9,7 +9,7 @@ outputs/*
 *.pyd
 *.py[cod]
 *$py.class
-
+debug/*
 # C extensions
 *.so
 
