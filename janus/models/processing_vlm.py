@@ -277,6 +277,11 @@ class VLChatProcessor(ProcessorMixin):
                 - image_id (int): the id of the image token
                 - num_image_tokens (List[int]): the number of image tokens
         """
+
+        assert (
+            prompt is None or conversations is None
+        ), "prompt and conversations cannot be used at the same time."
+
         if prompt is None:
             # apply sft format
             sft_format = self.apply_sft_template_for_multi_turn_prompts(
@@ -340,7 +345,9 @@ class VLChatProcessor(ProcessorMixin):
         prepare = self.process_one(
             prompt=prompt, conversations=conversations, images=images
         )
-        prepare = self.batchify(prepare)
+
+        if force_batchify:
+            prepare = self.batchify([prepare])
 
         return prepare
 

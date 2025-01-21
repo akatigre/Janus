@@ -13,14 +13,14 @@ dynamic_scale: "linear"
 decode: cfg
 idx: 0
 yjk:
-  use_hidden_state_bias: false
-  stepsize: 0.1
-  update_iters: 100
+  use_hidden_state_bias: true
+  stepsize: 0.01
+  update_iters: 40
   do_langevin_dynamics: true
-  weight_decay: 0.01
+  weight_decay: 0.0025
   start_noise: 0.5
   optimizer: 'AdamW'
-  k_filter: 30
+  k_filter: 10
   add_noise: true
 
 hydra:

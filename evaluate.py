@@ -114,68 +114,79 @@ def main(cfg: DictConfig):
         
         # if not len(save_path):
         #     continue
-    prompts = ["A yellow furry cat lying on a bed of red roses"]
+    # prompts = ["A yellow furry cat lying on a bed of red roses"]
+    prompts = ["A rabbit and a cat playing chess"]
     bsz = len(prompts)
     tokens, attention_mask = tokenize_text(vl_chat_processor, vl_gpt, prompts)
     tokens = tokens.to(device)
     attention_mask = attention_mask.to(device)
     input_embeds_prompt = vl_gpt.language_model.get_input_embeddings()(tokens) # bs, n_ctx, n_embed
-    original_tokens, cfg_logits, _ = generate_t2i(
+    prefix_len = input_embeds_prompt.shape[1]
+    generated_tokens, output_cond_logits, output_uncond_logits, output_cond_hidden, output_uncond_hidden = generate_t2i(
                             mmgpt = vl_gpt,
                             batch_size = len(prompts),
                             prompt_embeds = input_embeds_prompt,
                             attention_mask = attention_mask,
-                            do_langevin_dynamics = cfg.yjk.do_langevin_dynamics,
-                            cfg = cfg,
-                        ) 
-    cfg_topk = torch.topk(cfg_logits, k=cfg.yjk.k_filter, dim=-1)[1] # Use cond_logits to filter out
-    cfg_mask = torch.zeros_like(cfg_logits).scatter_(2, cfg_topk, 1)
-    # pil_img = convert_to_pil(original_tokens, vl_gpt, bsz, cfg.model_params.img_size)
-    # pil_img.save(f"debug/original_{cfg.cfg_scale}.png")
+                            cfg_scale = cfg.cfg_scale,
+    )
+    cfg_original = cfg_decode(logit_cond = output_cond_logits, logit_uncond = output_uncond_logits, scale = cfg.cfg_scale)
+    # topk = torch.topk(cfg_original, k=cfg.yjk.k_filter, dim=-1)[1]
+    # original_mask = (torch.zeros_like(cfg_original) - 1e10).scatter_(2, topk, 1)
+    os.makedirs(f"debug/{prompts[0]}", exist_ok=True)
+    pil_img = convert_to_pil(generated_tokens, vl_gpt, bsz, cfg.model_params.img_size)
+    pil_img.save(f"debug/{prompts[0]}/original_{cfg.cfg_scale}.png")
     
     if cfg.yjk.do_langevin_dynamics:
-        name = f"debug/cfg{cfg.cfg_scale}_{cfg.yjk.optimizer}_lr{cfg.yjk.stepsize}_initnoise{cfg.yjk.start_noise}"
+        name = f"debug/{prompts[0]}/cfg{cfg.cfg_scale}_{cfg.yjk.optimizer}_lr{cfg.yjk.stepsize}_initnoise{cfg.yjk.start_noise}_topk{cfg.yjk.k_filter}"
         name += "_hidden_bias" if cfg.yjk.use_hidden_state_bias else "_logit_bias"
         image_token_num_per_image = 576
         if cfg.yjk.use_hidden_state_bias:
             dim = 2048
-           
         else:
             dim = 16384
-        epsilons = torch.nn.Parameter(torch.zeros((bsz, image_token_num_per_image, dim)))  
-        
+            
+        cond_epsilons = torch.nn.Parameter(torch.zeros((bsz, image_token_num_per_image, dim)))  
+        uncond_epsilons = torch.nn.Parameter(torch.zeros((bsz, image_token_num_per_image, dim)))
         if cfg.yjk.optimizer == "Adam":
-            optimizer = torch.optim.Adam([epsilons], lr=cfg.yjk.stepsize)
+            optimizer = torch.optim.Adam([cond_epsilons, uncond_epsilons], lr=cfg.yjk.stepsize)
         elif cfg.yjk.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW([epsilons], lr=cfg.yjk.stepsize, weight_decay=cfg.yjk.weight_decay)
+            optimizer = torch.optim.AdamW([cond_epsilons, uncond_epsilons], lr=cfg.yjk.stepsize, weight_decay=cfg.yjk.weight_decay)
         elif cfg.yjk.optimizer == "SGD":
-            optimizer = torch.optim.SGD([epsilons], lr=cfg.yjk.stepsize)
+            optimizer = torch.optim.SGD([cond_epsilons, uncond_epsilons], lr=cfg.yjk.stepsize)
         else:
             raise ValueError(f"optimizer {cfg.yjk.optimizer} not supported.")
         
         best_loss = float('inf')
         temperature = 1.0
-
+        
+        loss_fn = torch.nn.CrossEntropyLoss()
         for it in trange(cfg.yjk.update_iters):
             start_time = time.time()
             
             if cfg.yjk.use_hidden_state_bias:
-                perturbed_logits = cfg_logits.to(device) + vl_gpt.gen_head(epsilons.to(device)) # 2 * batch_size, seq_len, vocab_size (16384)
-
+                perturbed_logits = torch.cat(
+                    [
+                        vl_gpt.gen_head((output_cond_hidden + cond_epsilons).to(device)),
+                        vl_gpt.gen_head((output_uncond_hidden + uncond_epsilons).to(device))
+                    ], dim=0)
+                # perturbed_logits = cfg_logits.to(device) + vl_gpt.gen_head(epsilons.to(device)) # 2 * batch_size, seq_len, vocab_size (16384)
             else:
-                perturbed_logits = (cfg_logits + epsilons).to(device)
+                perturbed_logits = torch.cat(
+                    [
+                        (output_cond_logits + cond_epsilons).to(device),
+                        (output_uncond_logits + uncond_epsilons).to(device)
+                    ], dim=0)
             
-            selected_tokens = torch.argmax(perturbed_logits, dim=-1).squeeze(dim=-1)
-            pil_img = convert_to_pil(selected_tokens, vl_gpt, bsz, cfg.model_params.img_size)
-            pil_img.save(f"debug/p{prompts[0]}_iter{it}.png")
+            soft_logits = (perturbed_logits / 0.001) - perturbed_logits.detach() + perturbed_logits    
+            perturbed_probs = torch.softmax(soft_logits / temperature, dim=-1) # 2 * batch_size, seq_len, vocab_size (16384)
+            uncond, cond = perturbed_probs[0::2, :, :], perturbed_probs[1::2, :, :]
+            cfg_logits_input = cfg_decode(logit_cond = cond, logit_uncond = uncond, scale = cfg.cfg_scale)
+            cfg_probs = torch.softmax(cfg_logits_input / temperature, dim=-1)
+            output_ids = cfg_probs.argmax(dim=-1).view(bsz, -1) # * model input maximum tokens
             
-            if cfg_mask is None:
-                soft_logits = (perturbed_logits / 0.001) - perturbed_logits.detach() + perturbed_logits    
-            else:
-                soft_logits = (perturbed_logits * cfg_mask.to(device) + -1e10 * (1 - cfg_mask.to(device))) / 0.001
-            perturbed_probs = torch.softmax(soft_logits / temperature, dim=-1)
             weights = vl_gpt.gen_embed.weight # mmgpt tensors are inference mode, so clone into regular tensor that records gradient
-            img_embeds = torch.matmul(torch.cat([perturbed_probs, perturbed_probs], dim=0), weights) # 2 * batch_size, seq_len, 2048
+            # img_embeds = torch.matmul(torch.cat([perturbed_probs, perturbed_probs], dim=0), weights) # 2 * batch_size, seq_len, 2048
+            img_embeds = torch.matmul(perturbed_probs, weights)
             img_embeds = vl_gpt.gen_aligner(img_embeds) # 2 * batch_size, seq_len, 2048
 
             args = {
@@ -190,29 +201,41 @@ def main(cfg: DictConfig):
                 **args
             )
             hidden_states = outputs.last_hidden_state
-            last_logits = vl_gpt.gen_head(hidden_states) # 2 * batch_size, seq_len, vocab_size (16384)
+            last_logits = vl_gpt.gen_head(hidden_states)[:, prefix_len:] # 2 * batch_size, seq_len, vocab_size (16384)
+            
             uncond_logits, cond_logits = last_logits[0::2, :], last_logits[1::2, :]
-            prefix_len = input_embeds_prompt.shape[1]
-            cfg_logits_new = cfg_decode(logit_cond = cond_logits, logit_uncond = uncond_logits, scale = cfg.cfg_scale)[:, prefix_len:]
-            
-            cfg_logits_new = cfg_logits_new * cfg_mask.to(device) + -1e10 * (1 - cfg_mask.to(device))
-            # loss_fn = torch.nn.CrossEntropyLoss()
-            # Note that < n predicts n, therefore input / labels should be shifted
-            # loss = loss_fn(cfg_logits_new[:, : -1].view(-1, 16384), original_tokens[:, 1 : ].detach().view(-1).long())
-            loss = soft_nll(cfg_logits_new[:, : -1], cfg_logits[:, 1:].to(device))
+            # output_ids_cond = cond.argmax(dim=-1).view(bsz, -1)
+            # cond_loss = loss_fn(cond_logits[:, : -1].view(-1, 16384), output_ids_cond[:, 1 : ].detach().view(-1).long())
+            # output_ids_uncond = uncond.argmax(dim=-1).view(bsz, -1)
+            # uncond_loss = loss_fn(uncond_logits[:, : -1].view(-1, 16384), output_ids_uncond[:, 1 : ].detach().view(-1).long())
+            cfg_logits_output = cfg_decode(logit_cond = cond_logits, logit_uncond = uncond_logits, scale = cfg.cfg_scale) # * model output 
+            # mask = torch.zeros_like(cfg_original).scatter_(2, topk, 1)[:, 1 : ].to(device)
+            loss = loss_fn((cfg_logits_output[:, : -1]).view(-1, 16384), output_ids[:, 1 : ].detach().view(-1).long())
+            # loss = cond_loss + uncond_loss
+
             loss.backward()
-            
             optimizer.step()
             if loss.item() < best_loss:
                 best_loss = loss.item()
-                                     
-            noise = torch.normal(mean=0.01, std=0.01, size=epsilons.shape, requires_grad=False) # reduce per iter
-            epsilons.data = epsilons.data + noise
-            log.info(f"loss: {loss.item()} Best loss: {best_loss}")
+                best_perturbed = perturbed_logits.detach()
+                        
+            noise = torch.normal(mean=0.01, std=0.01, size=cond_epsilons.shape, requires_grad=False) # reduce per iter
+            uc_noise = torch.normal(mean=0.01, std=0.01, size=uncond_epsilons.shape, requires_grad=False)
+            cond_epsilons.data = cond_epsilons.data + noise
+            uncond_epsilons.data = uncond_epsilons.data + uc_noise
             end_time = time.time()
-            log.info(f"Time taken: {end_time - start_time} seconds")
-
-                
+            log.info(f"Loss: {loss.item()} Best loss: {best_loss} Time taken: {end_time - start_time}") # Cond loss: {cond_loss.item()} Uncond loss: {uncond_loss.item()} 
+            
+        uncond, cond = best_perturbed[0::2, :, :], best_perturbed[1::2, :, :]
+        cfg_logits = cfg_decode(logit_cond = cond, logit_uncond = uncond, scale = cfg.cfg_scale)
+        cfg_probs = torch.softmax(cfg_logits / temperature, dim=-1)
+        selected_tokens_sample = torch.multinomial(cfg_probs.view(-1, 16384), num_samples=1).view(bsz, -1) # batch_size, seq_len
+        selected_tokens_greedy = cfg_probs.argmax(dim=-1).view(bsz, -1)
+        pil_img = convert_to_pil(selected_tokens_sample, vl_gpt, bsz, cfg.model_params.img_size)
+        pil_img.save(f"{name}_sampling.png")
+        pil_img = convert_to_pil(selected_tokens_greedy, vl_gpt, bsz, cfg.model_params.img_size)
+        pil_img.save(f"{name}_greedy.png")
           
+
 if __name__=="__main__":
     main()
